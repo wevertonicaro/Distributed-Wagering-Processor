@@ -1,0 +1,57 @@
+
+x-app: &app
+  build: .
+  env_file: .env
+  environment:
+    DATABASE_URL: postgres://wagering:wagering@postgres:5432/wagering
+    AWS_ENDPOINT_URL: http://localstack:4566
+    SQS_WAGER_QUEUE_URL: http://localstack:4566/000000000000/wager-transactions.fifo
+    SQS_WAGER_DLQ_URL: http://localstack:4566/000000000000/wager-transactions-dlq.fifo
+    SQS_EVENTS_QUEUE_URL: http://localstack:4566/000000000000/wager-events.fifo
+  depends_on:
+    postgres:
+      condition: service_healthy
+    localstack:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: wagering
+      POSTGRES_PASSWORD: wagering
+      POSTGRES_DB: wagering
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init-databases.sh:/docker-entrypoint-initdb.d/init-databases.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wagering"]
+      interval: 3s
+      retries: 10
+
+  localstack:
+    image: localstack/localstack:3
+    environment:
+      SERVICES: sqs
+    ports:
+      - "4566:4566"
+    volumes:
+      - ./scripts:/etc/localstack/init/ready.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "awslocal sqs list-queues | grep -q wager-events"]
+      interval: 3s
+      retries: 30
+
+  api:
+    <<: *app
+    ports:
+      - "3000:3000"
+
+  worker:
+    <<: *app
+    command: ["bun", "run", "src/worker.ts"]
+
+volumes:
+  postgres_data:
