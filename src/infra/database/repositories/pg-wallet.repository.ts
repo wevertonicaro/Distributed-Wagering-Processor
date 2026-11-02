@@ -3,6 +3,7 @@ import { ConcurrentModificationError } from '../../../application/errors';
 import { WalletRepository } from '../../../application/ports/repositories.port';
 import { Money } from '../../../domain/money';
 import { Wallet } from '../../../domain/wallet/wallet';
+import { concurrentModificationsTotal } from '../../observability/metrics';
 import { rowsOf } from './sql';
 
 interface WalletRow {
@@ -63,6 +64,7 @@ export class PgWalletRepository implements WalletRepository {
       ),
     );
     if (rows.length !== 1) {
+      concurrentModificationsTotal.inc();
       throw new ConcurrentModificationError(`wallet ${w.id} changed concurrently (expected version ${expectedVersion})`);
     }
   }

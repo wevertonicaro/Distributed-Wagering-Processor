@@ -26,6 +26,7 @@ const q = (name: string, queue: string) =>
 export const env = {
   nodeEnv: str('NODE_ENV', 'development'),
   port: int('PORT', 3000, 1),
+  workerPort: int('WORKER_PORT', 3001, 1),
   logLevel: str('LOG_LEVEL', 'info'),
   shutdownTimeoutMs: int('SHUTDOWN_TIMEOUT_MS', 15000, 1),
 

@@ -15,6 +15,7 @@ export interface WagerTransactionRepository {
   findByIdempotencyKey(providerId: string, idempotencyKey: string): Promise<WagerTransaction | null>;
   findByExternalId(providerId: string, externalTransactionId: string): Promise<WagerTransaction | null>;
   findReversalOf(referenceTransactionId: string): Promise<WagerTransaction | null>;
+  lockNextDuePendingReference(now: Date): Promise<WagerTransaction | null>;
   update(tx: WagerTransaction): Promise<void>;
 }
 
@@ -24,6 +25,8 @@ export interface LedgerRepository {
 
 export interface OutboxRepository {
   add(message: OutboxMessage): Promise<void>;
+  lockDue(now: Date, limit: number): Promise<OutboxMessage[]>;
+  save(message: OutboxMessage, lastError?: string): Promise<void>;
 }
 
 export interface InboxRepository {

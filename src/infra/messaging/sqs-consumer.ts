@@ -7,6 +7,7 @@ import {
   SQSClient,
 } from '@aws-sdk/client-sqs';
 import { log } from '../observability/logger';
+import { dlqMessagesTotal, messageRetriesTotal } from '../observability/metrics';
 import { classify, Disposition, errorCode } from './error-classifier';
 
 export type MessageHandler = (body: string) => Promise<void>;
@@ -19,6 +20,7 @@ export interface SqsConsumerOptions {
   concurrency: number;
   retryBaseSeconds?: number;
   retryMaxSeconds?: number;
+  maxReceiveCount?: number;
 }
 
 export function retryDelaySeconds(receiveCount: number, baseSeconds: number, maxSeconds: number): number {
@@ -108,6 +110,10 @@ export class SqsConsumer {
         disposition: outcome,
         error: error instanceof Error ? error.message : String(error),
       });
+      if (outcome === 'RETRY') {
+        messageRetriesTotal.inc();
+        if (receiveCount >= (this.options.maxReceiveCount ?? 5)) dlqMessagesTotal.inc({ reason: 'max_receive_count' });
+      }
     }
   }
 

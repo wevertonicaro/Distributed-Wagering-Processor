@@ -5,6 +5,7 @@ import { asObject, assertUuid, optionalString } from '../../application/validati
 import { MoneyProps } from '../../domain/money';
 import { WagerTransactionStatus as S } from '../../domain/wagering/wager-transaction';
 import { PgWalletQueries } from '../database/repositories/pg-wallet-queries';
+import { log } from '../observability/logger';
 import type { HttpResponse } from './domain-exception.filter';
 import { NoOpAuthGuard } from './no-op-auth.guard';
 
@@ -46,6 +47,15 @@ export class WageringController {
       money: b.money as MoneyProps,
       referenceExternalTransactionId: optionalString(b.referenceExternalTransactionId, 'referenceExternalTransactionId'),
       correlationId: correlationId?.trim() || undefined,
+    });
+
+    log('info', 'wager transaction handled', {
+      correlationId: correlationId?.trim() || result.transactionId,
+      transactionId: result.transactionId,
+      walletId: b.walletId,
+      providerId: b.providerId,
+      status: result.status,
+      idempotentReplay: result.idempotentReplay,
     });
 
     res.status(HTTP_STATUS[result.status]);

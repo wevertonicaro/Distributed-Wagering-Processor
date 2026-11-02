@@ -122,3 +122,39 @@ export async function waitFor(
 }
 
 export const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+export async function createEventsQueue(): Promise<{ sqs: SQSClient; url: string; cleanup(): Promise<void> }> {
+  const sqs = createSqsClient();
+  const out = await sqs.send(
+    new CreateQueueCommand({ QueueName: `test-events-${randomUUID().slice(0, 8)}.fifo`, Attributes: { FifoQueue: 'true' } }),
+  );
+  return {
+    sqs,
+    url: out.QueueUrl!,
+    cleanup: async () => {
+      await sqs.send(new DeleteQueueCommand({ QueueUrl: out.QueueUrl })).catch(() => undefined);
+    },
+  };
+}
+
+export async function drainQueue(
+  sqs: SQSClient,
+  queueUrl: string,
+  opts: { expected?: number; timeoutMs?: number; idleRounds?: number } = {},
+): Promise<string[]> {
+  const bodies: string[] = [];
+  const deadline = Date.now() + (opts.timeoutMs ?? 20_000);
+  let idle = 0;
+  while (Date.now() < deadline) {
+    const out = await sqs.send(new ReceiveMessageCommand({ QueueUrl: queueUrl, MaxNumberOfMessages: 10, WaitTimeSeconds: 1 }));
+    const messages = out.Messages ?? [];
+    for (const m of messages) {
+      bodies.push(m.Body ?? '');
+      await sqs.send(new DeleteMessageCommand({ QueueUrl: queueUrl, ReceiptHandle: m.ReceiptHandle }));
+    }
+    if (opts.expected !== undefined && bodies.length >= opts.expected) break;
+    idle = messages.length === 0 ? idle + 1 : 0;
+    if (opts.expected === undefined && idle >= (opts.idleRounds ?? 2)) break;
+  }
+  return bodies;
+}
