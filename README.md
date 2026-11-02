@@ -1,98 +1,171 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# 🦧 Distributed Wagering Processor — Jungle Gaming
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+Serviço financeiro distribuído de alta performance para processamento de transações de apostas
+(_BET_, _WIN_, _LOSS_, _REFUND_, _ROLLBACK_) em tempo real, construído com foco em **precisão
+monetária**, **concorrência**, **idempotência persistente** e **consistência eventual com garantia
+de ledger imutável**.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+---
 
-## Description
+## 📋 Sumário
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+- [Visão Geral e Arquitetura](#-visão-geral-e-arquitetura)
+- [Tecnologias Utilizadas](#-tecnologias-utilizadas)
+- [Pré-requisitos](#-pré-requisitos)
+- [Como Executar o Projeto](#-como-executar-o-projeto)
+- [Suíte de Testes](#-suíte-de-testes)
+- [Endpoints HTTP](#-endpoints-http)
+- [Garantias do Sistema e Invariantes](#-garantias-do-sistema-e-invariantes)
 
-## Project setup
+---
 
-```bash
-$ bun install
+## 🏛️ Visão Geral e Arquitetura
+
+O sistema adota **Arquitetura Hexagonal (Ports & Adapters)** e **Domain-Driven Design (DDD)**,
+garantindo desacoplamento total entre as regras de negócio e os mecanismos de infraestrutura.
+
+```
+                  +------------------------+
+                  |  HTTP API / SQS Queue  |
+                  +-----------+------------+
+                              |
+                              v
+                  +------------------------+
+                  |   Application Layer    |
+                  |  (Use Cases & Services)|
+                  +-----------+------------+
+                              |
+                              v
+                  +------------------------+
+                  |      Domain Layer      |
+                  | (Wallet, Money, Wager) |
+                  +-----------+------------+
+                              |
+                              v
+                  +------------------------+
+                  |   Infra & Database     |
+                  | (PostgreSQL & Outbox)  |
+                  +------------------------+
 ```
 
-## Compile and run the project
+### Principais Padrões Arquiteturais
+
+- **Padrão Inbox / Outbox:** Garantia at-least-once de consumo e publicação de mensagens integradas
+  atomicamente à transação SQL do PostgreSQL.
+- **Pessimistic Locking por Wallet (`SELECT ... FOR UPDATE`):** Evita _lost updates_ e
+  inconsistências em ambientes distribuídos concorrentes mantendo a alta vazão entre carteiras
+  distintas.
+- **Ledger Imutável (Audit Trail):** O saldo da carteira é garantido por um registro imutável com
+  _trigger_ em nível de banco que impede modificações ou exclusões retroativas.
+
+---
+
+## 🛠️ Tecnologias Utilizadas
+
+- **Runtime & Package Manager:** [Bun 1.x](https://bun.sh/)
+- **Linguagem:** TypeScript (Strict Mode)
+- **Framework:** NestJS
+- **Banco de Dados:** PostgreSQL 16 (TypeORM sem `@Entity` — SQL limpo e explícito)
+- **Mensageria:** AWS SQS (executado localmente via LocalStack)
+- **Containers:** Docker e Docker Compose
+
+---
+
+## ⚡ Pré-requisitos
+
+Certifique-se de ter instalado em sua máquina:
+
+- [Docker Desktop](https://www.docker.com/) e Docker Compose
+- [Bun](https://bun.sh/) (opcional se executado dentro dos containers Docker)
+
+---
+
+## 🚀 Como Executar o Projeto
+
+### 1. Clonar o repositório e configurar variáveis
 
 ```bash
-# development
-$ bun run start
-
-# watch mode
-$ bun run start:dev
-
-# production mode
-$ bun run start:prod
+cp .env.example .env
 ```
 
-## Run tests
+### 2. Subir os serviços com Docker Compose
+
+O comando abaixo subirá o **PostgreSQL**, **LocalStack (SQS)**, a **API HTTP** e o **Worker
+assíncrono**:
 
 ```bash
-# unit tests
-$ bun run test
-
-# e2e tests
-$ bun run test:e2e
-
-# test coverage
-$ bun run test:cov
+docker compose up -d --build
 ```
 
-## Deployment
+As filas SQS serão inicializadas automaticamente através do script `scripts/init-queues.sh`.
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+### 3. Rodar as Migrations do Banco de Dados
 
 ```bash
-$ bun install -g @nestjs/mau
-$ mau deploy
+bun run migration:run
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+---
 
-## Resources
+## 🧪 Suíte de Testes
 
-Check out a few resources that may come in handy when working with NestJS:
+O projeto contém testes rigorosos cobrindo operações monetárias, cenários de alta concorrência (ex.:
+requisições concorrentes disputando o mesmo saldo) e simulação de concorrência real contra bancos de
+dados de teste.
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+### Executar Testes Unitários
 
-## Support
+Testa as regras de domínio, imutabilidade da classe `Money` e validações de agregados:
 
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
+```bash
+bun run test:unit
+```
 
-## Stay in touch
+### Executar Testes de Integração
 
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
+Executa cenários com PostgreSQL e LocalStack/SQS reais:
 
-## License
+```bash
+bun run test:int
+```
 
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+### Executar Testes E2E (End-to-End)
+
+```bash
+bun run test:e2e
+```
+
+---
+
+## 📡 Endpoints HTTP
+
+A API aceita e retorna valores monetários no formato JSON
+`{ "amount": "25.00", "currency": "BRL" }`.
+
+| Método | Rota                                                                  | Descrição                                                                    |
+| ------ | --------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `POST` | `/wallets`                                                            | Criação de uma nova carteira para o jogador                                  |
+| `GET`  | `/wallets/:walletId`                                                  | Consulta os detalhes e o saldo da carteira                                   |
+| `GET`  | `/wallets/:walletId/ledger`                                           | Retorna o extrato paginado da carteira via cursor                            |
+| `POST` | `/wagering/transactions`                                              | Submete uma transação de aposta (`BET`, `WIN`, `LOSS`, `REFUND`, `ROLLBACK`) |
+| `GET`  | `/wagering/transactions/:transactionId`                               | Consulta uma transação pelo ID interno                                       |
+| `GET`  | `/providers/:providerId/wagering/transactions/:externalTransactionId` | Consulta transação pelo ID do provedor                                       |
+| `POST` | `/wallets/:walletId/reconciliation`                                   | Executa a reconciliação do saldo com base no ledger                          |
+| `GET`  | `/health/live`                                                        | Liveness probe do serviço                                                    |
+| `GET`  | `/health/ready`                                                       | Readiness probe (valida conexão com PostgreSQL e SQS)                        |
+
+> **Nota de Idempotência:** Todas as chamadas em `POST /wagering/transactions` requerem o cabeçalho
+> HTTP `Idempotency-Key`.
+
+---
+
+## 🔒 Garantias do Sistema e Invariantes
+
+1. **Aritmética Exata:** Nenhuma variável monetária utiliza `number`, `float` ou `double`. Toda a
+   lógica monetária utiliza centavos inteiros (`bigint`) serializados com escala decimal 2.
+2. **Saldo Não-Negativo:** Restrições do schema do banco (`CHECK (balance >= 0)`) e invariantes no
+   domínio impedem saldos negativos.
+3. **Idempotência Persistente:** O replay de transações com a mesma `Idempotency-Key` e mesmo
+   payload devolve exatamente o resultado original, sem duplicar efeitos financeiros.
+4. **Resiliência a Falhas:** Registros na Outbox garantem que mensagens de eventos não sejam
+   perdidas mesmo em falhas ou crashes da aplicação.
