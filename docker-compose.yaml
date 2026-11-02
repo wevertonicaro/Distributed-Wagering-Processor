@@ -52,6 +52,7 @@ services:
   worker:
     <<: *app
     command: ["bun", "run", "src/worker.ts"]
+    ports: ["3001:3001"]
 
 volumes:
   postgres_data:

@@ -6,6 +6,7 @@ import { WagerTransactionApplier } from './application/services/wager-transactio
 import { ProcessWagerTransaction } from './application/use-cases/process-wager-transaction';
 import { env } from './infra/config/env';
 import { TypeOrmUnitOfWork } from './infra/database/typeorm-unit-of-work';
+import { prometheusProcessingMetrics } from './infra/observability/metrics';
 
 @Module({
   imports: [
@@ -24,6 +25,12 @@ import { TypeOrmUnitOfWork } from './infra/database/typeorm-unit-of-work';
       provide: ProcessWagerTransaction,
       useFactory: (uow: TypeOrmUnitOfWork, applier: WagerTransactionApplier) =>
         new ProcessWagerTransaction(uow, applier, systemClock, uuidGenerator),
+      inject: [TypeOrmUnitOfWork, WagerTransactionApplier],
+    },
+    {
+      provide: ProcessWagerTransaction,
+      useFactory: (uow: TypeOrmUnitOfWork, applier: WagerTransactionApplier) =>
+        new ProcessWagerTransaction(uow, applier, systemClock, uuidGenerator, prometheusProcessingMetrics),
       inject: [TypeOrmUnitOfWork, WagerTransactionApplier],
     },
   ],

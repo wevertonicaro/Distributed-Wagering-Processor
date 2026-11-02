@@ -136,4 +136,18 @@ export class PgWagerTransactionRepository implements WagerTransactionRepository 
     );
     return rows[0] ? toTransaction(rows[0]) : null;
   }
+
+  async lockNextDuePendingReference(now: Date): Promise<WagerTransaction | null> {
+    const rows = rowsOf<Row>(
+      await this.em.query(
+        `SELECT ${COLUMNS} FROM wager_transactions
+          WHERE status = 'PENDING_REFERENCE' AND next_reference_attempt_at <= $1
+          ORDER BY next_reference_attempt_at
+          LIMIT 1
+          FOR UPDATE SKIP LOCKED`,
+        [now],
+      ),
+    );
+    return rows[0] ? toTransaction(rows[0]) : null;
+  }
 }

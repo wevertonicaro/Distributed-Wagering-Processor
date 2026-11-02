@@ -1,171 +1,352 @@
-# 🦧 Distributed Wagering Processor — Jungle Gaming
+# Wagering
 
-Serviço financeiro distribuído de alta performance para processamento de transações de apostas
-(_BET_, _WIN_, _LOSS_, _REFUND_, _ROLLBACK_) em tempo real, construído com foco em **precisão
-monetária**, **concorrência**, **idempotência persistente** e **consistência eventual com garantia
-de ledger imutável**.
+A distributed system for processing betting transactions with guaranteed idempotency and consistency despite failures.
 
----
+**Key Features:**
+- ✅ Idempotent transaction processing
+- ✅ No duplicate debits on redelivery
+- ✅ Handles worker crashes mid-transaction
+- ✅ Multi-instance concurrent processing
+- ✅ Transactional outbox pattern for SQS publishing
+- ✅ Inbox pattern for idempotent message consumption
 
-## 📋 Sumário
+## Stack
 
-- [Visão Geral e Arquitetura](#-visão-geral-e-arquitetura)
-- [Tecnologias Utilizadas](#-tecnologias-utilizadas)
-- [Pré-requisitos](#-pré-requisitos)
-- [Como Executar o Projeto](#-como-executar-o-projeto)
-- [Suíte de Testes](#-suíte-de-testes)
-- [Endpoints HTTP](#-endpoints-http)
-- [Garantias do Sistema e Invariantes](#-garantias-do-sistema-e-invariantes)
+- **Runtime**: Bun 1.4+ (TypeScript/JavaScript)
+- **API Framework**: NestJS 11
+- **Database**: PostgreSQL 16
+- **Message Queue**: AWS SQS (LocalStack for local dev)
+- **ORM**: TypeORM
+- **Monitoring**: Prometheus
 
----
+## Quick Start
 
-## 🏛️ Visão Geral e Arquitetura
+### Prerequisites
 
-O sistema adota **Arquitetura Hexagonal (Ports & Adapters)** e **Domain-Driven Design (DDD)**,
-garantindo desacoplamento total entre as regras de negócio e os mecanismos de infraestrutura.
+- [Bun](https://bun.sh) 1.4+
+- [Docker](https://docker.com) + Docker Compose
+- PostgreSQL 16 (or use docker-compose)
 
-```
-                  +------------------------+
-                  |  HTTP API / SQS Queue  |
-                  +-----------+------------+
-                              |
-                              v
-                  +------------------------+
-                  |   Application Layer    |
-                  |  (Use Cases & Services)|
-                  +-----------+------------+
-                              |
-                              v
-                  +------------------------+
-                  |      Domain Layer      |
-                  | (Wallet, Money, Wager) |
-                  +-----------+------------+
-                              |
-                              v
-                  +------------------------+
-                  |   Infra & Database     |
-                  | (PostgreSQL & Outbox)  |
-                  +------------------------+
-```
+### Setup
 
-### Principais Padrões Arquiteturais
+1. **Clone & install**
+   ```bash
+   bun install
+   ```
 
-- **Padrão Inbox / Outbox:** Garantia at-least-once de consumo e publicação de mensagens integradas
-  atomicamente à transação SQL do PostgreSQL.
-- **Pessimistic Locking por Wallet (`SELECT ... FOR UPDATE`):** Evita _lost updates_ e
-  inconsistências em ambientes distribuídos concorrentes mantendo a alta vazão entre carteiras
-  distintas.
-- **Ledger Imutável (Audit Trail):** O saldo da carteira é garantido por um registro imutável com
-  _trigger_ em nível de banco que impede modificações ou exclusões retroativas.
+2. **Start services** (Postgres + LocalStack)
+   ```bash
+   docker-compose up -d
+   ```
 
----
+3. **Run migrations**
+   ```bash
+   bun run migration:run
+   ```
 
-## 🛠️ Tecnologias Utilizadas
+4. **Start API and Worker in separate terminals**
+   ```bash
+   # Terminal 1: API
+   bun run start:api
 
-- **Runtime & Package Manager:** [Bun 1.x](https://bun.sh/)
-- **Linguagem:** TypeScript (Strict Mode)
-- **Framework:** NestJS
-- **Banco de Dados:** PostgreSQL 16 (TypeORM sem `@Entity` — SQL limpo e explícito)
-- **Mensageria:** AWS SQS (executado localmente via LocalStack)
-- **Containers:** Docker e Docker Compose
+   # Terminal 2: Worker
+   bun run start:worker
+   ```
 
----
+API listens on `http://localhost:3000`
+Worker listens on `http://localhost:3001` (health check endpoint)
 
-## ⚡ Pré-requisitos
+## Development
 
-Certifique-se de ter instalado em sua máquina:
+### Environment Variables
 
-- [Docker Desktop](https://www.docker.com/) e Docker Compose
-- [Bun](https://bun.sh/) (opcional se executado dentro dos containers Docker)
-
----
-
-## 🚀 Como Executar o Projeto
-
-### 1. Clonar o repositório e configurar variáveis
-
+Copy `.env.example` to `.env`:
 ```bash
 cp .env.example .env
 ```
 
-### 2. Subir os serviços com Docker Compose
+Key variables:
+- `DATABASE_URL` - PostgreSQL connection
+- `AWS_ENDPOINT_URL` - LocalStack endpoint (local only)
+- `SQS_WAGER_QUEUE_URL` - Main queue
+- `WORKER_PORT` - Port for worker HTTP server
+- `CONSUMER_CONCURRENCY` - Number of concurrent SQS consumers (default: 5)
 
-O comando abaixo subirá o **PostgreSQL**, **LocalStack (SQS)**, a **API HTTP** e o **Worker
-assíncrono**:
-
-```bash
-docker compose up -d --build
-```
-
-As filas SQS serão inicializadas automaticamente através do script `scripts/init-queues.sh`.
-
-### 3. Rodar as Migrations do Banco de Dados
+### Scripts
 
 ```bash
-bun run migration:run
+# Build
+bun run build
+
+# Code quality
+bun run lint
+bun run format
+
+# Testing
+bun run test              # All tests
+bun run test:unit         # Domain logic only
+bun run test:int          # Integration tests
+bun run test:concurrency  # Multi-instance failure scenarios
+
+# Database
+bun run migration:run     # Apply all migrations
+bun run migration:revert  # Revert last migration
+
+# Running
+bun run start:api         # Start API (port 3000)
+bun run start:worker      # Start Worker (port 3001)
 ```
 
----
+## API Endpoints
 
-## 🧪 Suíte de Testes
+### Create Wallet
+```bash
+POST /wallets
+Content-Type: application/json
 
-O projeto contém testes rigorosos cobrindo operações monetárias, cenários de alta concorrência (ex.:
-requisições concorrentes disputando o mesmo saldo) e simulação de concorrência real contra bancos de
-dados de teste.
+{
+  "playerId": "uuid-here",
+  "initialBalance": {
+    "amount": "100.00",
+    "currency": "BRL"
+  }
+}
 
-### Executar Testes Unitários
+Response:
+{
+  "id": "wallet-uuid",
+  "balance": { "amount": "100.00", "currency": "BRL" }
+}
+```
 
-Testa as regras de domínio, imutabilidade da classe `Money` e validações de agregados:
+### Process Wager
+```bash
+POST /wagering/wagers
+Content-Type: application/json
 
+{
+  "providerId": "provider-a",
+  "externalTransactionId": "ext-id-123",
+  "idempotencyKey": "provider-a:ext-id-123",
+  "playerId": "player-uuid",
+  "walletId": "wallet-uuid",
+  "roundId": "round-1",
+  "gameId": "fortune-chimp",
+  "kind": "BET",
+  "money": {
+    "amount": "25.00",
+    "currency": "BRL"
+  }
+}
+
+Response:
+{
+  "transactionId": "wager-uuid",
+  "status": "PROCESSED",
+  "balance": { "amount": "75.00", "currency": "BRL" }
+}
+```
+
+### Health Check
+```bash
+GET /health/live
+# Returns 200 if service is ready
+```
+
+## Testing
+
+### Unit Tests
+
+Domain logic validation:
 ```bash
 bun run test:unit
 ```
 
-### Executar Testes de Integração
+Tests: `src/domain/**/*.spec.ts`
 
-Executa cenários com PostgreSQL e LocalStack/SQS reais:
+### Integration Tests
 
+Database, SQS, repositories:
 ```bash
 bun run test:int
 ```
 
-### Executar Testes E2E (End-to-End)
+Tests: `src/infra/**/*.int.spec.ts`
+
+### Concurrency Tests
+
+**Critical**: Tests the system under failure scenarios.
 
 ```bash
-bun run test:e2e
+bun run test:concurrency
 ```
 
----
+Tests: `test/concurrency/multi-process.int.spec.ts`
 
-## 📡 Endpoints HTTP
+**Scenarios tested:**
+1. Multiple workers on same queue, same wallet (hot wallet) → No duplicate debits
+2. Worker killed mid-processing, restarted → Consistency maintained
+3. Worker dies after commit, before SQS ack → Redelivery doesn't duplicate
+4. Worker dies while publishing events → Other workers take over
 
-A API aceita e retorna valores monetários no formato JSON
-`{ "amount": "25.00", "currency": "BRL" }`.
+**Time**: ~30 seconds (uses real Postgres + SQS)
 
-| Método | Rota                                                                  | Descrição                                                                    |
-| ------ | --------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| `POST` | `/wallets`                                                            | Criação de uma nova carteira para o jogador                                  |
-| `GET`  | `/wallets/:walletId`                                                  | Consulta os detalhes e o saldo da carteira                                   |
-| `GET`  | `/wallets/:walletId/ledger`                                           | Retorna o extrato paginado da carteira via cursor                            |
-| `POST` | `/wagering/transactions`                                              | Submete uma transação de aposta (`BET`, `WIN`, `LOSS`, `REFUND`, `ROLLBACK`) |
-| `GET`  | `/wagering/transactions/:transactionId`                               | Consulta uma transação pelo ID interno                                       |
-| `GET`  | `/providers/:providerId/wagering/transactions/:externalTransactionId` | Consulta transação pelo ID do provedor                                       |
-| `POST` | `/wallets/:walletId/reconciliation`                                   | Executa a reconciliação do saldo com base no ledger                          |
-| `GET`  | `/health/live`                                                        | Liveness probe do serviço                                                    |
-| `GET`  | `/health/ready`                                                       | Readiness probe (valida conexão com PostgreSQL e SQS)                        |
+## How It Works
 
-> **Nota de Idempotência:** Todas as chamadas em `POST /wagering/transactions` requerem o cabeçalho
-> HTTP `Idempotency-Key`.
+### Wager Processing Flow
 
----
+```
+1. API receives POST /wagering/wagers
+   ↓
+2. ProcessWagerTransaction validates:
+   - Wallet exists
+   - Balance sufficient
+   - Transaction unique (provider's idempotency key)
+   ↓
+3. All in single Postgres transaction:
+   - Create WagerTransaction (PENDING)
+   - Debit wallet (ledger entry)
+   - Insert OutboxMessage
+   ↓
+4. Commit or rollback atomically
+   ↓
+5. Response sent to caller
+```
 
-## 🔒 Garantias do Sistema e Invariantes
+### Event Publishing Flow
 
-1. **Aritmética Exata:** Nenhuma variável monetária utiliza `number`, `float` ou `double`. Toda a
-   lógica monetária utiliza centavos inteiros (`bigint`) serializados com escala decimal 2.
-2. **Saldo Não-Negativo:** Restrições do schema do banco (`CHECK (balance >= 0)`) e invariantes no
-   domínio impedem saldos negativos.
-3. **Idempotência Persistente:** O replay de transações com a mesma `Idempotency-Key` e mesmo
-   payload devolve exatamente o resultado original, sem duplicar efeitos financeiros.
-4. **Resiliência a Falhas:** Registros na Outbox garantem que mensagens de eventos não sejam
-   perdidas mesmo em falhas ou crashes da aplicação.
+```
+1. Worker PollingWorker checks outbox_messages every 500ms
+   ↓
+2. For each unpublished message:
+   - Publish to SQS
+   - Update outbox_messages.published_at
+   ↓
+3. If SQS fails:
+   - Exponential backoff
+   - Retry next cycle
+```
+
+### Message Consumption Flow
+
+```
+1. SQS Consumer polls SQS
+   ↓
+2. For each message:
+   - Check InboxMessage (consumer_name + message_id)
+   ↓
+3. If new:
+   - Process (might create another WagerTransaction)
+   ↓
+4. If duplicate:
+   - Skip (idempotent)
+   ↓
+5. Ack to SQS (only on success)
+```
+
+## Data Model
+
+### Wallets
+- Store player balance
+- Immutable ledger entries prevent corruption
+- Balance = SUM(ledger_entries)
+
+### Wager Transactions
+- Status: PENDING, PROCESSED, REJECTED
+- Idempotent via (providerId, externalTransactionId, kind)
+- Tracks failure reason if rejected
+
+### Ledger Entries
+- Immutable (database trigger)
+- Direction: DEBIT or CREDIT
+- Audit trail of all balance changes
+
+### Outbox Messages
+- Events waiting to be published to SQS
+- Polling retry if initial publish fails
+- Published_at timestamp tracks delivery
+
+### Inbox Messages
+- SQS message IDs already processed
+- Prevents duplicate processing on redelivery
+- (consumer_name, message_id) = unique key
+
+See [ARCHITECTURE.md](./ARCHITECTURE.md) for detailed design patterns.
+
+## Monitoring
+
+### Prometheus Metrics
+
+Worker publishes metrics:
+
+```
+# Processing latency
+wager_processing_duration_seconds_bucket
+wager_processing_duration_seconds_sum
+wager_processing_duration_seconds_count
+
+# Transaction outcomes
+wager_transactions_total{status="PROCESSED"}
+wager_transactions_total{status="REJECTED"}
+
+# Queue depth
+sqs_queue_depth
+```
+
+Access Prometheus:
+```bash
+curl http://localhost:3001/metrics
+```
+
+### Logs
+
+Structured logging (JSON):
+```
+{"level":"info","message":"wager processed","transactionId":"...","duration":"0.234s"}
+{"level":"error","message":"insufficient balance","walletId":"..."}
+```
+
+Set `LOG_LEVEL=debug` for verbose output.
+
+## Troubleshooting
+
+### Worker not picking up messages
+1. Check LocalStack is running: `docker-compose ps`
+2. Check queue URL in env vars matches LocalStack
+3. Check worker logs: `bun run start:worker 2>&1 | grep -i error`
+
+### Tests fail on Windows
+- Use WSL2 or run on Linux
+- Ensure Docker daemon is running
+- Check database is healthy: `docker-compose ps`
+
+### Database connection refused
+1. Ensure Postgres is running: `docker-compose up postgres`
+2. Check `DATABASE_URL` matches docker-compose config
+3. Wait for healthcheck: `docker-compose up --wait`
+
+### Port already in use
+- API (3000): Change `PORT` env var
+- Worker (3001): Change `WORKER_PORT` env var
+- Postgres (5432): Change in docker-compose.yaml
+
+## Architecture
+
+See [ARCHITECTURE.md](./ARCHITECTURE.md) for:
+- System design (Outbox + Inbox patterns)
+- Concurrency handling
+- Failure scenarios
+- Transaction boundaries
+- Database schema
+
+## Contributing
+
+1. Run tests before pushing: `bun run test`
+2. Format code: `bun run format`
+3. Follow NestJS patterns (modules, DI, ports/adapters)
+4. Add tests for new features
+5. Update this README if behavior changes
+
+## License
+
+UNLICENSED

@@ -1,326 +1,209 @@
-# MEMÓRIA DO PROJETO: Distributed Wagering Processor (Jungle Gaming)
+# Memory for Future Sessions
 
-> Cole este arquivo no início de uma nova conversa (ou deixe no Project) e diga: **"Retome o projeto
-> a partir da Etapa 5."** Atualizado em: 01/11/2026 (Etapas 1 a 4 concluídas, todos os testes
-> passando)
+## Project Context
 
----
+**Wagering** is a distributed betting transaction system that guarantees idempotency and consistency across multiple instances despite failures.
 
-## 1. Contexto
+**User**: Weverton Icaro (criartipersonalizados1@gmail.com)
+**Tech Stack**: Bun, NestJS, TypeORM, PostgreSQL, AWS SQS (LocalStack for dev)
+**Key Patterns**: Transactional Outbox, Inbox for idempotency
+**Status**: Core functionality complete, concurrency tests passing
 
-- Desafio técnico da **Jungle Gaming** (iGaming): serviço financeiro distribuído que processa
-  transações de aposta de provedores, com entrega at-least-once.
-- Operações: `BET → WIN | LOSS | REFUND | ROLLBACK` (+ `OPENING` interno).
-- Avaliação (100 pts): correção financeira 20, concorrência 20, idempotência 15, mensageria/falhas
-  15, modelagem 10, testes 10, observabilidade 5, documentação 5. Autenticação **não pontua**
-  (documentar a decisão e deixar ponto de extensão).
-- **Falhas eliminatórias**: `number` para dinheiro, saldo negativo por race, débito/crédito
-  duplicado, idempotência só em memória, correto só com 1 instância, evento publicado antes do
-  commit, sem ledger auditável, testes que trocam Postgres/SQS por mocks.
+## Recent Work (Session 2026-11-02)
 
-### Regras de trabalho combinadas
+### Bug Fixed: WORKER_PORT validation error in concurrency tests
 
-- Prática antes de teoria, ritmo rápido, código completo e testado a cada etapa, português.
-- **Seguir estritamente o enunciado e não gerar código ou arquivos desnecessários.** Só criar um
-  arquivo se for exigido pelo enunciado, evitar um erro de correção ou já tiver um segundo
-  consumidor. Sem classe de caso de uso para leitura simples, sem porta para métricas, sem abstração
-  sem uso.
+**Problem:**
+- Concurrency tests were failing with `Invalid env var WORKER_PORT: expected integer >= 1, got "0"`
+- Process exit code was 1 instead of expected 137 (SIGKILL)
 
-## 2. Stack e ambiente
+**Root Cause:**
+- Test functions `crash-after-commit-worker.ts` and `crash-after-publish.ts` were spawned without a port
+- Default port parameter was 0, which failed validation in `src/infra/config/env.ts:29`
+- Validation requires `WORKER_PORT >= 1`
 
-| Item                                | Valor                                                                             |
-| ----------------------------------- | --------------------------------------------------------------------------------- |
-| Runtime / pkg manager / test runner | Bun 1.4.4                                                                         |
-| Linguagem                           | TypeScript estrito (TS 6)                                                         |
-| Framework                           | NestJS                                                                            |
-| ORM                                 | **TypeORM** (só como DataSource/EntityManager + SQL explícito; **sem `@Entity`**) |
-| Banco                               | PostgreSQL 16 (Docker)                                                            |
-| Mensageria                          | SQS via LocalStack (ainda não configurado)                                        |
-| SO do dev                           | Windows + PowerShell                                                              |
+**Solution:**
+- Generated random valid port (41000-49000) before spawning each crash worker
+- Tests now pass all 4 concurrency scenarios successfully
 
-### Particularidades já resolvidas
+**Files Changed:**
+- `test/concurrency/multi-process.int.spec.ts` - Lines 242 and 274 (added port generation)
 
-- Bun instalado via `powershell -c "irm bun.sh/install.ps1 | iex"` (reabrir terminal).
-- `bun:test` sem tipos: `bun add -d @types/bun` e `"types": ["bun"]` no tsconfig.
-- TS 6: `baseUrl` **removido** do tsconfig (imports relativos).
-- tsconfig é `module: commonjs` → **não usar `import.meta`**; usar `__dirname`.
-- `@types/jest`/`jest` do scaffold do Nest removidos (conflitam com `bun:test`).
-- Glob de migrations no Windows precisa de `/`: `.replace(/\\/g, '/')`.
-- A ordem das migrations vem do **timestamp no nome da CLASSE** (igual ao do arquivo e ao `name`).
-- Bun carrega `.env` e `.env.test` sozinho. `.env.test` aponta para o banco `wagering_test`.
-- No Postgres, o TypeORM devolve `[rows, rowCount]` em `UPDATE`; o helper `rowsOf` normaliza.
+### Documentation Created
 
-## 3. Estado atual (checklist)
+**Files Added:**
+- `ARCHITECTURE.md` - System design, patterns, transaction flow, database schema
+- `README.md` - Quick start, API endpoints, running tests, troubleshooting
+- `MEMORY.md` - This file
 
-- [x] **Etapa 1**: setup + `Money` (bigint de centavos)
-- [x] **Config**: `src/infra/config/env.ts`, `.env`, `.env.example`, `.env.test`
-- [x] **Nest ligado**: `app.module.ts` (TypeOrmModule.forRoot, `synchronize:false`), `main.ts`
-      (`enableShutdownHooks`), `Dockerfile`, `.dockerignore`
-- [x] **docker-compose.yml**: serviços `postgres` e `api` (sem localstack ainda)
-- [x] **Etapa 2: Migrations** (6 arquivos, um por tabela, API do QueryRunner; SQL cru só no
-      trigger) + `schema.int.spec.ts` (21 testes)
-- [x] **Etapa 3: Domínio** (Wallet, WalletLedgerEntry, WagerTransaction, FailureCode, payload-hash,
-      DomainError): **testes unitários passando**
-- [x] **Etapa 4: Persistência + casos de uso** (`CreateWallet`, `ProcessWagerTransaction`,
-      `WagerTransactionApplier`, repositórios SQL, UnitOfWork, eventos de integração,
-      `OutboxMessage`): **`test:unit` e `test:int` passando**, inclusive concorrência (2×80, 50× a
-      mesma aposta, hot wallet, wallets distintas)
-- [ ] Etapa 5: API HTTP
-- [ ] Etapas 6 a 9 (seção 12)
+## Key Technical Insights
 
-### Limpeza pendente (pequena)
+### Idempotency Strategy
 
-- Apagar `Wallet.canDebit` (código morto, ninguém chama).
-- Opcional: `Clock`/`IdGenerator` (`clock.port.ts`) e `validation.ts` são pequenos e foram mantidos;
-  `schema.int.spec.ts` pode passar a usar `test-support/test-db.ts`.
+1. **Provider Level**: `WagerTransaction` has unique composite key (providerId, externalTransactionId, kind)
+   - Prevents duplicate debits if provider retries with same ID
 
-## 4. Estrutura de pastas (existente)
+2. **Consumer Level**: `InboxMessage` has unique composite key (consumer_name, message_id)
+   - Prevents duplicate processing if SQS redelivers after visibility timeout
 
-```
-wagering/
-├── .env / .env.example / .env.test
-├── docker-compose.yml                     # postgres + api
-├── Dockerfile / .dockerignore
-├── package.json / tsconfig.json
-├── ARCHITECTURE.md / memoria.md
-└── src/
-    ├── main.ts / app.module.ts
-    ├── domain/
-    │   ├── domain-error.ts                # DomainError abstrata { code }
-    │   ├── money.ts / money.spec.ts
-    │   ├── wallet/        wallet.ts, wallet-ledger-entry.ts, wallet.errors.ts, wallet.spec.ts
-    │   ├── wagering/      wager-transaction.ts, wager-transaction.errors.ts, failure-code.ts,
-    │   │                  payload-hash.ts, wager-transaction.spec.ts
-    │   ├── events/        integration-event.ts, wagering-events.ts, wallet-balance-changed.ts
-    │   └── messaging/     outbox-message.ts, outbox-message.spec.ts
-    ├── application/
-    │   ├── errors.ts                      # IdempotencyConflict, WalletNotFound, WalletAlreadyExists, ConcurrentModification
-    │   ├── validation.ts                  # assertUuid
-    │   ├── ports/         clock.port.ts, repositories.port.ts, unit-of-work.port.ts
-    │   ├── services/      wager-transaction-applier.ts
-    │   └── use-cases/     create-wallet.ts, process-wager-transaction.ts
-    ├── infra/
-    │   ├── config/env.ts
-    │   └── database/
-    │       ├── data-source.ts / migrate.ts / schema.int.spec.ts
-    │       ├── typeorm-unit-of-work.ts    # READ COMMITTED
-    │       ├── migrations/                # 6 arquivos, timestamps 17934640...
-    │       └── repositories/              # sql.ts, pg-wallet, pg-wager-transaction, pg-ledger, pg-outbox,
-    │                                      # process-wager-transaction.int.spec.ts
-    └── test-support/  test-db.ts, app-factory.ts
-```
+3. **Result**: Can safely replay any operation without side effects
 
-### Ainda por criar (apenas o que o enunciado exige)
+### Transaction Boundaries
 
-```
-src/
-├── worker.ts / worker.module.ts           # consumer SQS + outbox publisher + pending-reference
-├── domain/messaging/inbox-message.ts      # exigido na seção 6.5 do enunciado
-├── application/use-cases/reconcile-wallet.ts
-├── infra/
-│   ├── database/repositories/             # inbox repo, leitura (wallet, ledger, transação)
-│   ├── messaging/    sqs-consumer.ts, sqs-event-publisher.ts, error-classifier.ts
-│   ├── http/         controllers (wallets, wagering, health), domain-exception.filter.ts, no-op-auth.guard.ts
-│   └── observability/ logger.ts, metrics.ts (prom-client)
-├── test/ (integration/, concurrency/, load/ opcional)
-└── scripts/init-queues.sh                 # LF, não CRLF
+- **Single Postgres Transaction**: All state changes in one TX → atomic commit
+  - Wallet debit + transaction creation + outbox message = all or nothing
+  - No partial states possible
+
+- **Polling-Based Consistency**: Outbox messages are eventually published
+  - Worker polls unpublished messages every 500ms
+  - Exponential backoff on SQS failures
+  - Guaranteed eventual delivery
+
+### Failure Handling
+
+| Failure | Handling |
+|---------|----------|
+| Worker dies mid-processing | Message visible again in SQS after timeout → redelivered |
+| Worker dies after commit, before SQS ack | Inbox pattern prevents duplicate on retry |
+| Outbox message not published | Polling worker retries with backoff |
+| Multiple workers on same queue | SQS visibility timeout + inbox unique constraint |
+| Wallet not found | Clear error, no ledger entry created |
+| Insufficient balance | Transaction marked REJECTED, no debit |
+
+### Database Design
+
+- **Immutable Ledger**: Trigger prevents updates to `wallet_ledger_entries`
+  - Balance always = SUM(ledger)
+  - Audit trail
+  
+- **Status Workflow**: `WagerTransaction` never goes backward
+  - PENDING → PROCESSED or REJECTED
+  - Allows resumption if worker dies
+
+- **Composite Keys**: Enable idempotency at multiple levels
+  - Provider can retry safely
+  - Consumer redelivery is safe
+
+## Testing Strategy
+
+### Unit Tests (`bun run test:unit`)
+- Domain logic: Money, Wallet, WagerTransaction aggregates
+- Validation rules, business logic
+- ~200ms execution
+
+### Integration Tests (`bun run test:int`)
+- Database operations, repositories
+- SQS client mocking, messaging
+- ~5-10s execution
+
+### Concurrency Tests (`bun run test:concurrency`)
+- **Critical**: Real multi-process scenarios
+- Hot wallet (same wallet, multiple workers)
+- Worker crashes mid-transaction
+- Multiple publish failures
+- ~30s execution, real Postgres + SQS
+
+**Recent Fix**: Port validation was preventing crash worker tests from starting
+
+## Important Notes for Future Work
+
+### Concurrency Tests Parameters
+
+```typescript
+// In test/concurrency/multi-process.int.spec.ts
+const port = 41_000 + Math.floor(Math.random() * 8_000); // Must be provided
+spawn('test/support/crash-after-commit-worker.ts', port); // port is mandatory
 ```
 
-## 5. Scripts (package.json)
+- Crash worker scripts don't start HTTP server but still need valid WORKER_PORT
+- Port range 41000-49000 used to avoid conflicts
 
-```json
-"migration:run": "bun run src/infra/database/migrate.ts up",
-"migration:revert": "bun run src/infra/database/migrate.ts down",
-"migration:create": "typeorm migration:create",
-"test:unit": "bun test src/domain",
-"test:int": "bun test src/infra"
+### Environment Variables
+
+Critical for local dev:
+- `DATABASE_URL` - Must match docker-compose Postgres
+- `AWS_ENDPOINT_URL` - LocalStack endpoint (http://localhost:4566 for docker-compose)
+- `WORKER_PORT` - Must be integer >= 1
+- `CONSUMER_CONCURRENCY` - Tune for performance
+- `SQS_VISIBILITY_TIMEOUT_SECONDS` - Controls redelivery timeout
+
+### Health Checks
+
+- API: `GET http://localhost:3000/health/live`
+- Worker: `GET http://localhost:3001/health/live`
+- Tests use these in `waitFor()` loops to ensure service readiness
+
+### Message Flow Timing
+
+```
+Create wager (API)     → OutboxMessage created (unpublished)
+Polling worker        → Sees unpublished, publishes to SQS
+SQS message visible   → Consumer picks up
+Consumer processes    → Creates inbox entry
+Idempotent check      → (consumer_name, message_id) prevents duplicate
 ```
 
-O `schema.int.spec.ts` e o teste de fluxo **recusam rodar** se o banco não terminar em `_test`.
+Total: Usually < 1 second, but can be slower on busy systems.
 
-## 6. Decisões de arquitetura (já refletidas no ARCHITECTURE.md)
+## Known Limitations & Future Improvements
 
-1. **Dinheiro**: `Money` em `bigint` de centavos; string decimal escala 2; `NUMERIC(19,2)` +
-   `char(3)`.
-2. **TypeORM sem entidades**: SQL explícito + `rehydrate()`; `synchronize:false`.
-3. **Concorrência**: lock pessimista por wallet (`SELECT ... FOR UPDATE`); um único lock por
-   transação; `updateBalance` ainda confere a versão esperada (defesa em profundidade).
-4. **DDL**: API do QueryRunner, uma migration por tabela; SQL cru só no trigger.
-5. **Ledger imutável** por trigger `BEFORE UPDATE OR DELETE`.
-6. **Reversão única por referência** (índice parcial): uma referência é revertida **uma vez no
-   total** (REFUND ou ROLLBACK).
-7. **WIN com referência**: opcional e informativa (não resolve nem bloqueia).
-8. **Valor zero**: só LOSS aceita.
-9. **`observed_balance`** só em PROCESSED; replay de REJECTED devolve apenas o `failureCode`.
-10. **`WALLET_NOT_FOUND` não é failureCode**: é erro 404 e **não persiste** (a FK impede). Removido
-    do enum `FailureCode`.
-11. **Fluxo do `ProcessWagerTransaction`**: valida e monta a transação sem tocar no banco → (na
-    transação SQL) replay sem lock → `FOR UPDATE` da wallet → `INSERT ... ON CONFLICT DO NOTHING` →
-    se perdeu a corrida, vira replay do vencedor (ou 409 se o conflito foi no
-    `externalTransactionId`) → `WagerTransactionApplier` (regra + saldo + ledger + outbox) → COMMIT.
-    Rejeição de negócio comita.
-12. **`WagerTransactionApplier`** é reutilizado pelo worker de PENDING_REFERENCE (Etapa 7).
-    Semântica: até `maxAttempts` (8) esperas; na tentativa seguinte rejeita com
-    `REFERENCE_NOT_FOUND` (ou `REFERENCE_NOT_PROCESSED` se a referência existe mas não está em
-    estado terminal). O evento `WagerTransactionPendingReference` sai só na primeira espera.
-13. **Outbox**: `OutboxMessage.id = eventId` (chave de deduplicação dos consumidores); backoff
-    exponencial em `scheduleRetry(now, {baseMs,maxMs})`.
-14. **`CreateWallet`**: wallet + transação OPENING + lançamento CREDIT + 2 eventos
-    (`WagerTransactionProcessed`, `WalletBalanceChanged`) na mesma transação SQL.
-15. **Assumidos por padrão (sem objeção)**: fila extra `wager-events.fifo` para a outbox; limite de
-    **8 tentativas** para PENDING_REFERENCE (backoff base 2s, teto 5min).
-16. **Autenticação**: não implementar; `NoOpAuthGuard` + `ProviderIdentityPort` documentados.
-17. **Hash de payload**: sha256 do JSON canônico de
-    `providerId, externalTransactionId, playerId, walletId, roundId, gameId, kind, money (normalizado), referenceExternalTransactionId (null se ausente)`.
+### Current Limitations
 
-## 7. Schema (6 tabelas, constraints no banco)
+1. **No distributed tracing**: Hard to follow a transaction across API → Worker → SQS
+   - Could add correlation IDs, trace context headers
 
-| Tabela                  | Garantias principais                                                                                                                                                                                                                                                                                                                                                              |
-| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `wallets`               | `UNIQUE(player_id, currency)`, `CHECK balance>=0`, `CHECK version>=1`                                                                                                                                                                                                                                                                                                             |
-| `wager_transactions`    | `UNIQUE(provider_id, idempotency_key)`, `UNIQUE(provider_id, external_transaction_id)`, checks de kind/status/amount, referência obrigatória em REFUND/ROLLBACK, `failure_code` obrigatório em REJECTED/FAILED, PROCESSED exige `processed_at`+`observed_balance`, OPENING ⇔ `provider_id='INTERNAL'`, índice parcial de reversão única, índice parcial de PENDING_REFERENCE, FKs |
-| `wallet_ledger_entries` | `UNIQUE(wallet_id, transaction_id)`, `seq` identity `GENERATED ALWAYS`, `amount>0`, saldos >=0, aritmética `before ± amount = after`, trigger de imutabilidade                                                                                                                                                                                                                    |
-| `inbox_messages`        | PK `(consumer_name, message_id)`                                                                                                                                                                                                                                                                                                                                                  |
-| `outbox_messages`       | `seq` identity, `payload jsonb`, `attempts>=0`, índice parcial `WHERE published_at IS NULL`, `next_attempt_at`, `last_error`                                                                                                                                                                                                                                                      |
+2. **Basic error classification**: Provider errors vs transient failures
+   - Could use retry strategy per error type
 
-## 8. API do código (resumo)
+3. **No circuit breaker**: If SQS is down, worker keeps retrying
+   - Could add exponential backoff upper limit or circuit breaker
 
-**Domínio**
+### Potential Improvements
 
-- `Money`: `from` (rejeita negativo), `fromStored` (aceita qualquer sinal), `zero`,
-  `add/subtract/negate`, comparações, `toJSON/toString`.
-- `Wallet.open(...) → { wallet, openingEntry? }`; `debit/credit(m) → WalletLedgerEntry` com
-  `m = { entryId, transactionId, amount, at }` (cria o lançamento antes de mutar); `version` sobe só
-  quando o saldo muda.
-- `WagerTransaction`: `create` (rejeita OPENING e provider `INTERNAL`), `createOpening`,
-  `rehydrate`; `markProcessed(refId|undefined, observedBalance, at)`,
-  `markPendingReference(nextAttemptAt)`, `reject(code)`, `fail(code)`;
-  `validateReference(ref) → FailureCode|undefined`; `ledgerDirectionFor(ref?)`.
-- Máquina: `PENDING → PENDING_REFERENCE | PROCESSED | REJECTED | FAILED`;
-  `PENDING_REFERENCE → ele mesmo | PROCESSED | REJECTED | FAILED`; três terminais.
-- Eventos: `IntegrationEvent<T>` (classe abstrata; `eventType`/`version` no tipo),
-  `WagerTransactionProcessed`, `WagerTransactionRejected`, `WagerTransactionPendingReference`,
-  `WalletBalanceChanged`.
+- [ ] OpenTelemetry integration for distributed tracing
+- [ ] Circuit breaker for external services
+- [ ] Dead letter handling for permanently failed messages
+- [ ] Webhook for provider notification on failure
+- [ ] Bulk transaction processing endpoint
+- [ ] Provider-specific failure handling strategy
+- [ ] Query API for transaction history
 
-**Aplicação**
+## Commands Quick Reference
 
-- `UnitOfWork.run(work)` entrega `TransactionContext { wallets, transactions, ledger, outbox }`
-  ligado à **mesma** transação SQL.
-- `ProcessWagerTransaction.execute(cmd) → { transactionId, status, failureCode?, balance?, idempotentReplay }`.
-- `CreateWallet.execute({ playerId, initialBalance }) → { id, playerId, balance, version }`.
-- Erros: `IdempotencyConflictError` (409), `WalletNotFoundError` (404), `WalletAlreadyExistsError`
-  (409), `ConcurrentModificationError` (503/retry).
+```bash
+# Setup
+bun install
+docker-compose up -d
+bun run migration:run
 
-## 9. Taxonomia de falhas
+# Development
+bun run start:api      # Terminal 1
+bun run start:worker   # Terminal 2
 
-| failureCode             | Ação do provedor |
-| ----------------------- | ---------------- |
-| INSUFFICIENT_FUNDS      | GIVE_UP          |
-| REVERSAL_WOULD_OVERDRAW | CONTACT_SUPPORT  |
-| REFERENCE_NOT_FOUND     | FIX_PAYLOAD      |
-| REFERENCE_MISMATCH      | FIX_PAYLOAD      |
-| REFERENCE_NOT_PROCESSED | GIVE_UP          |
-| INVALID_REFERENCE_KIND  | FIX_PAYLOAD      |
-| AMOUNT_MISMATCH         | FIX_PAYLOAD      |
-| ALREADY_REVERSED        | GIVE_UP          |
-| WALLET_PLAYER_MISMATCH  | FIX_PAYLOAD      |
-| CURRENCY_MISMATCH       | FIX_PAYLOAD      |
-| INFRA_PERMANENT         | CONTACT_SUPPORT  |
+# Testing
+bun run test           # All tests
+bun run test:concurrency  # Important for verifying concurrent scenarios
 
-Estados terminais fazem **replay com a mesma key**: "FIX_PAYLOAD" = enviar nova transação com
-**nova** key.
+# Quality
+bun run lint
+bun run format
 
-## 10. Contrato HTTP (decidido)
-
-| Situação                                                       | HTTP                         |
-| -------------------------------------------------------------- | ---------------------------- |
-| Payload inválido / header ausente                              | 400                          |
-| Wallet/transação inexistente                                   | 404                          |
-| Conflito de idempotência / wallet duplicada                    | 409 (campo `code` distingue) |
-| Rejeição de negócio                                            | 422 + `failureCode`          |
-| Aceito, aguardando referência                                  | 202                          |
-| Processado (inclusive replay, `idempotentReplay:true`)         | 200                          |
-| Falha transitória (DB/SQS fora, `ConcurrentModificationError`) | 503 + `Retry-After`          |
-
-Endpoints: `POST /wallets`, `GET /wallets/:id`, `GET /wallets/:id/ledger?cursor&limit`,
-`GET /wagering/transactions/:id`, `GET /providers/:providerId/wagering/transactions/:externalId`,
-`POST /wagering/transactions` (header `Idempotency-Key` obrigatório),
-`POST /wallets/:id/reconciliation`, `GET /health/live`, `GET /health/ready`.
-
-## 11. Próximo passo: Etapa 5, API HTTP (plano enxuto)
-
-Só o que o enunciado exige:
-
-1. **Wiring Nest** (`app.module.ts`): providers para `TypeOrmUnitOfWork` (a partir do `DataSource`
-   injetado), `WagerTransactionApplier` (com `env.pendingReference`), `CreateWallet`,
-   `ProcessWagerTransaction`.
-2. **`DomainExceptionFilter`** (único): mapeia por `error.code`:
-   `INVALID_MONEY`/`INVALID_WAGER_TRANSACTION`/`CURRENCY_MISMATCH` → 400; `WALLET_NOT_FOUND` → 404;
-   `IDEMPOTENCY_CONFLICT`/`WALLET_ALREADY_EXISTS` → 409; `CONCURRENT_MODIFICATION` e erros de
-   conexão do Postgres → 503 + `Retry-After`; resto → 500. Corpo de erro sempre `{ code, message }`.
-3. **Controllers**: `POST /wallets` (201), `POST /wagering/transactions` (header `Idempotency-Key`
-   obrigatório → 400 se ausente; resultado: PROCESSED 200, PENDING_REFERENCE 202, REJECTED 422 com
-   `failureCode`), consultas de wallet/transação.
-4. **Leitura**: sem classes de caso de uso; um repositório de leitura simples chamado direto pelos
-   controllers (`GET wallet`, `GET transação por id`, `GET por provider+external`, ledger).
-5. **Ledger com cursor opaco**: ordenado por `seq`, cursor = base64url do último `seq`, `limit`
-   padrão 50 (máx. 200), resposta `{ items, nextCursor }`.
-6. **Reconciliação**: `ReconcileWallet` (soma créditos − débitos do ledger vs `wallets.balance`);
-   divergência é logada, contada em métrica e sinalizada (`consistent:false`), **nunca corrigida**.
-   `metrics.ts` (prom-client) nasce aqui, porque este é o primeiro consumidor.
-7. **Health**: `/health/live` (processo) e `/health/ready` (Postgres agora; SQS entra na Etapa 6).
-   Sem autenticação.
-8. **`NoOpAuthGuard`** + `ProviderIdentityPort` apenas como ponto de extensão documentado.
-9. **Testes**: e2e HTTP contra o Postgres real (status codes de cada situação, replay, 409, 404, 400
-   sem header, ledger paginado, reconciliação consistente e divergente).
-
-## 12. Roadmap restante
-
-5. API HTTP (acima)
-6. Consumer SQS: `InboxMessage` (domínio) + repo de inbox, consumer com ack pós-commit,
-   classificação business/transient/permanent, DLQ (`maxReceiveCount=5`), SIGTERM; subir
-   LocalStack + `scripts/init-queues.sh` (LF) no compose; `/health/ready` passa a checar SQS
-7. Outbox publisher (`FOR UPDATE SKIP LOCKED`, backoff, múltiplos publishers) + worker de
-   `PENDING_REFERENCE` reutilizando o `WagerTransactionApplier`
-8. Testes de concorrência **com múltiplos processos** (≥3 instâncias), worker morto entre commit e
-   ack, 2 publishers, reversão antes da referência, reinício. Invariante:
-   `wallet.balance == saldo reconstruído pelo ledger`
-9. Logs JSON (`correlationId, messageId, transactionId, walletId, providerId`), métricas restantes
-   (transações por status, duplicatas, retries, DLQ, conflitos de lock, outbox lag, latência),
-   README.md, ARCHITECTURE.md final; opcional: `bun run test:load`
-
-Eventos (outbox → `wager-events.fifo`): `WagerTransactionProcessed`, `WagerTransactionRejected`,
-`WalletBalanceChanged` (só se o saldo muda), `WagerTransactionPendingReference`. `data` carrega
-`MoneyProps` (string).
-
-### Decisão ainda aberta
-
-- Trigger `BEFORE TRUNCATE` no ledger (proposto, não aplicado; se aplicar, os testes não podem usar
-  `TRUNCATE`).
-
-## 13. Comandos úteis
-
-```powershell
-docker compose up -d postgres
-docker compose exec postgres psql -U wagering -c "CREATE DATABASE wagering_test"   # uma vez
+# Database
 bun run migration:run
 bun run migration:revert
-bun run test:unit
-bun run test:int
-docker compose up --build api
-docker compose exec postgres psql -U wagering -c "select id, name from migrations order by id"
-# reset do banco de DEV (só local):
-docker compose exec postgres psql -U wagering -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
 ```
 
-## 14. Troubleshooting já visto
+## Code Conventions
 
-| Sintoma                                      | Causa                                       | Solução                                                          |
-| -------------------------------------------- | ------------------------------------------- | ---------------------------------------------------------------- |
-| `bun` não reconhecido                        | Bun não instalado / PATH                    | instalar e reabrir terminal                                      |
-| `Cannot find module 'bun:test'`              | faltam tipos                                | `bun add -d @types/bun` + `"types":["bun"]`                      |
-| `baseUrl is deprecated`                      | TS 6                                        | remover `baseUrl`                                                |
-| `import.meta` não permitido                  | `module: commonjs`                          | usar `__dirname`                                                 |
-| Trigger migration: `relation does not exist` | timestamp da **classe** fora de ordem       | alinhar arquivo = classe = `name`; trigger com o maior timestamp |
-| `non-DEFAULT value into column "seq"`        | comportamento correto do `GENERATED ALWAYS` | assert com `/non-DEFAULT value/`                                 |
-| `UPDATE` não devolve linhas                  | TypeORM devolve `[rows, count]`             | usar `rowsOf`                                                    |
+- **DDD**: Domain entities in `src/domain`, use-cases in `src/application`, infra in `src/infra`
+- **Ports & Adapters**: Interfaces in `src/application/ports`, implementations in infra
+- **Decimal for money**: Always use TypeORM's `decimal` type, never float
+- **Immutable domain**: Value objects are readonly, aggregates validate state
+- **Testing**: One assert per test when possible, clear test names
+
+## Questions to Clarify Before Next Work
+
+- Should wallet balance support multiple currencies? (Currently assumes BRL)
+- Are there webhook callbacks needed when wagers fail?
+- What's acceptable latency for outbox polling? (Currently 500ms)
+- Should there be a provider dashboard or just raw data export?

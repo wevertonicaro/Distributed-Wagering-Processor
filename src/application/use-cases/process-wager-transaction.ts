@@ -10,6 +10,7 @@ import {
 import { InvalidWagerTransactionError } from '../../domain/wagering/wager-transaction.errors';
 import { IdempotencyConflictError, InboxPayloadMismatchError, WalletNotFoundError } from '../errors';
 import { Clock, IdGenerator } from '../ports/clock.port';
+import { noopMetrics, ProcessingMetrics } from '../ports/metrics.port';
 import { TransactionContext, UnitOfWork } from '../ports/unit-of-work.port';
 import { WagerTransactionApplier } from '../services/wager-transaction-applier';
 import { assertUuid } from '../validation';
@@ -37,15 +38,20 @@ export interface ProcessWagerTransactionResult {
   idempotentReplay: boolean;
 }
 
+const secondsSince = (started: number) => (performance.now() - started) / 1000;
+
 export class ProcessWagerTransaction {
   constructor(
     private readonly uow: UnitOfWork,
     private readonly applier: WagerTransactionApplier,
     private readonly clock: Clock,
     private readonly ids: IdGenerator,
+    private readonly metrics: ProcessingMetrics = noopMetrics,
   ) {}
 
   async execute(cmd: ProcessWagerTransactionCommand): Promise<ProcessWagerTransactionResult> {
+    const started = performance.now();
+
     assertUuid('walletId', cmd.walletId);
     assertUuid('playerId', cmd.playerId);
     if (!Object.values(WagerTransactionKind).includes(cmd.kind as WagerTransactionKind)) {
@@ -70,13 +76,15 @@ export class ProcessWagerTransaction {
     });
     const correlationId = cmd.correlationId ?? tx.id;
 
-    return this.uow.run(async (ctx) => {
+    const result = await this.uow.run(async (ctx) => {
       if (cmd.inbox) await this.receiveInbox(ctx, cmd.inbox, payloadHash);
 
       const existing = await ctx.transactions.findByIdempotencyKey(tx.providerId, tx.idempotencyKey);
       if (existing) return this.replay(existing, payloadHash);
 
+      const lockStarted = performance.now();
       const wallet = await ctx.wallets.findByIdForUpdate(tx.walletId);
+      this.metrics.lockWait(secondsSince(lockStarted));
       if (!wallet) throw new WalletNotFoundError(tx.walletId);
 
       if (!(await ctx.transactions.insertIfAbsent(tx))) {
@@ -88,6 +96,9 @@ export class ProcessWagerTransaction {
       await this.applier.apply(ctx, wallet, tx, this.clock.now(), correlationId);
       return this.toResult(tx, false);
     });
+
+    this.metrics.transaction(result.status, result.idempotentReplay, secondsSince(started));
+    return result;
   }
 
   private async receiveInbox(
